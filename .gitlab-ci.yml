@@ -1,0 +1,6 @@
+include:
+- project: "infra/pipelines/pipelines"
+  file:
+    - "projects/${CI_PROJECT_PATH}.yml"
+
+
