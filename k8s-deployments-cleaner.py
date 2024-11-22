@@ -74,7 +74,6 @@ def delete_deployments():
         logger.info("Failed deployment found: {}, one of its pods was created: {} in ns: {}", deployment['name'], deployment['pod_creation_timestamp'], deployment['ns'])
         logger.warning("{} Deleting deployment {} from ns {}", dry_run_msg, deployment['name'], deployment['ns'])
         try:
-            print()
             apps_v1.delete_namespaced_deployment(name=deployment['name'], namespace=deployment['ns'], dry_run=dry_run)
         except ApiException as e:
             logger.error("Exception when calling AppsV1Api->delete_namespaced_deployment: {}", e)
