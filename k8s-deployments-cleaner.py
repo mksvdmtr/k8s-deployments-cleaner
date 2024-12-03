@@ -8,6 +8,7 @@ import argparse
 parser = argparse.ArgumentParser()
 parser.add_argument('--dry', action='store_true', help='When present, indicates that modifications should not be persisted. In logs: [DRY RUN]')
 parser.add_argument('--local', action='store_true', help='When present, loads authentication and cluster information from kube-config file')
+parser.add_argument('--days', type=int, default=7, help='Retention days for failed deployments (default: 7)')
 args = parser.parse_args()
 
 if args.local:
@@ -28,7 +29,9 @@ apps_v1 = client.AppsV1Api()
 today = datetime.now(timezone.utc)
 namespaces_names = []
 failed_deployments = []
-retention_days = 3
+retention_days = args.days
+
+print(args.days)
 
 def get_namespaces():
     logger.info("Getting namespaces ...")
@@ -43,23 +46,27 @@ def get_failed_deployments():
         for pod in pods.items:
             if pod.metadata.owner_references:
                 if pod.metadata.owner_references[0].kind == 'ReplicaSet':
-                    for condition in pod.status.container_statuses:
-                        if ((not condition.state.running) or (condition.state.terminated and condition.state.terminated.reason != "Completed")):
-                            creation_timestamp = pod.metadata.creation_timestamp
-                            creation_time = creation_timestamp.replace(tzinfo=timezone.utc)
-                            time_diff = today - creation_time
-                            days_passed = time_diff.days
-                            if days_passed > retention_days:
-                                replicaset_name = pod.metadata.owner_references[0].name
-                                replicaset_name_splitted = replicaset_name.rsplit("-", 1)[0]
-                                dep_info = apps_v1.read_namespaced_deployment(name=replicaset_name_splitted, namespace=pod.metadata.namespace)
-                                if (dep_info.status.replicas != 0) and (dep_info.status.replicas == dep_info.status.unavailable_replicas):
-                                    if replicaset_name_splitted not in failed_deployments:
-                                        collection = {}
-                                        collection['name'] = replicaset_name_splitted
-                                        collection['ns'] = pod.metadata.namespace
-                                        collection['pod_creation_timestamp'] = pod.metadata.creation_timestamp
-                                        failed_deployments.append(collection)
+                    if pod.status.container_statuses:
+                        for condition in pod.status.container_statuses:
+                            if ((not condition.state.running) or (condition.state.terminated and condition.state.terminated.reason != "Completed")):
+                                creation_timestamp = pod.metadata.creation_timestamp
+                                creation_time = creation_timestamp.replace(tzinfo=timezone.utc)
+                                time_diff = today - creation_time
+                                days_passed = time_diff.days
+                                if days_passed > retention_days:
+                                    replicaset_name = pod.metadata.owner_references[0].name
+                                    replicaset_name_splitted = replicaset_name.rsplit("-", 1)[0]
+                                    try:
+                                        dep_info = apps_v1.read_namespaced_deployment(name=replicaset_name_splitted, namespace=pod.metadata.namespace)
+                                    except ApiException as e:
+                                        logger.warning("Exception when calling AppsV1Api->get_namespaced_deployment: {}", e)
+                                    if (dep_info.status.replicas != 0) and (dep_info.status.replicas == dep_info.status.unavailable_replicas):
+                                        if replicaset_name_splitted not in failed_deployments:
+                                            collection = {}
+                                            collection['name'] = replicaset_name_splitted
+                                            collection['ns'] = pod.metadata.namespace
+                                            collection['pod_creation_timestamp'] = pod.metadata.creation_timestamp
+                                            failed_deployments.append(collection)
 
 def delete_deployments():
     if len(failed_deployments) == 0:
@@ -77,6 +84,7 @@ def delete_deployments():
             apps_v1.delete_namespaced_deployment(name=deployment['name'], namespace=deployment['ns'], dry_run=dry_run)
         except ApiException as e:
             logger.error("Exception when calling AppsV1Api->delete_namespaced_deployment: {}", e)
+    logger.info("{} Total deleted deployments: {}", dry_run_msg, len(failed_deployments))
 
 if __name__ == "__main__":
     get_namespaces()
