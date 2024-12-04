@@ -4,12 +4,20 @@ from kubernetes.config.config_exception import ConfigException
 from datetime import datetime, timezone
 from loguru import logger
 import argparse
+import requests
+import os
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--dry', action='store_true', help='When present, indicates that modifications should not be persisted. In logs: [DRY RUN]')
 parser.add_argument('--local', action='store_true', help='When present, loads authentication and cluster information from kube-config file')
 parser.add_argument('--days', type=int, default=7, help='Retention days for failed deployments (default: 7)')
 args = parser.parse_args()
+
+if 'PACHCA_WEBHOOK_URL' in os.environ and os.environ['PACHCA_WEBHOOK_URL']:
+    WEBHOOK_URL = os.environ.get('PACHCA_WEBHOOK_URL')
+else:
+    logger.error("Env variable PACHCA_WEBHOOK_URL not set or empty")
+    exit(1)
 
 if args.local:
     try:
@@ -29,9 +37,8 @@ apps_v1 = client.AppsV1Api()
 today = datetime.now(timezone.utc)
 namespaces_names = []
 failed_deployments = []
+deleted_deployments = []
 retention_days = args.days
-
-print(args.days)
 
 def get_namespaces():
     logger.info("Getting namespaces ...")
@@ -82,11 +89,29 @@ def delete_deployments():
         logger.warning("{} Deleting deployment {} from ns {}", dry_run_msg, deployment['name'], deployment['ns'])
         try:
             apps_v1.delete_namespaced_deployment(name=deployment['name'], namespace=deployment['ns'], dry_run=dry_run)
+            collection = {}
+            collection['ns'] = deployment['ns']
+            collection['name'] = deployment['name']
+            deleted_deployments.append(collection)
         except ApiException as e:
             logger.error("Exception when calling AppsV1Api->delete_namespaced_deployment: {}", e)
-    logger.info("{} Total deleted deployments: {}", dry_run_msg, len(failed_deployments))
+    logger.info("{} Total deleted deployments: {}", dry_run_msg, len(deleted_deployments))
+
+def notify():
+    dry_run_msg = ""
+    if args.dry:
+        dry_run_msg = "[DRY RUN]"
+    payload = { 
+        "deployments": deleted_deployments,
+        "days": retention_days,
+        "dry": dry_run_msg
+    }
+    webhook_response = requests.post(WEBHOOK_URL, json=payload, headers={'Content-Type': 'application/json'})
+    webhook_response.raise_for_status()
+    logger.info("Webhook sent successfully")
 
 if __name__ == "__main__":
     get_namespaces()
     get_failed_deployments()
     delete_deployments()
+    notify()
