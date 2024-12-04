@@ -13,10 +13,10 @@ parser.add_argument('--local', action='store_true', help='When present, loads au
 parser.add_argument('--days', type=int, default=7, help='Retention days for failed deployments (default: 7)')
 args = parser.parse_args()
 
-if 'PACHCA_WEBHOOK_URL' in os.environ and os.environ['PACHCA_WEBHOOK_URL']:
-    WEBHOOK_URL = os.environ.get('PACHCA_WEBHOOK_URL')
+if 'pachca_webhook_url' in os.environ and os.environ['pachca_webhook_url']:
+    WEBHOOK_URL = os.environ.get('pachca_webhook_url')
 else:
-    logger.error("Env variable PACHCA_WEBHOOK_URL not set or empty")
+    logger.error("Env variable \"pachca_webhook_url\" not set or empty")
     exit(1)
 
 if args.local:
