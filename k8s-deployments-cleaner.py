@@ -98,6 +98,8 @@ def delete_deployments():
     logger.info("{} Total deleted deployments: {}", dry_run_msg, len(deleted_deployments))
 
 def notify():
+    if len(failed_deployments) == 0:
+        exit(0)
     dry_run_msg = ""
     if args.dry:
         dry_run_msg = "[DRY RUN]"
