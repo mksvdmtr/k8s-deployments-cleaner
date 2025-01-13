@@ -1,5 +1,5 @@
 SRC_DIR = .
-DOCKER_REGISTRY=gitlab.docker.lamoda.ru
+DOCKER_REGISTRY=harbor.lamodatech.ru/apps/qa/tools
 APP_NAME=k8s-deployments-cleaner
 
 VERSION ?= $(shell git describe --tags || git rev-parse --short HEAD)
@@ -13,6 +13,7 @@ TAG_LATEST=$(DOCKER_REGISTRY)/${APP_NAME}:latest
 
 @build:
 	docker build \
+	    --platform=linux/amd64 \
 		--build-arg VERSION=${VERSION} \
 		--build-arg GIT_SHA=$(GIT_SHA) \
 		--tag ${TAG} \
