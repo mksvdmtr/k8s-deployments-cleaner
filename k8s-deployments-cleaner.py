@@ -35,23 +35,23 @@ else:
 core_v1 = client.CoreV1Api()
 apps_v1 = client.AppsV1Api()
 today = datetime.now(timezone.utc)
-namespaces_names = []
-failed_deployments = []
+
+
 deleted_deployments = []
 retention_days = args.days
 
-failed_pod_of_deployments = []
-failed_pod_of_jobs = []
-
 def get_namespaces():
+    namespaces_names = []
     logger.info("Getting namespaces ...")
     namespaces = core_v1.list_namespace(label_selector='hnc.x-k8s.io/included-namespace=true', watch=False)
     for ns in namespaces.items:
         namespaces_names.append(ns.metadata.name)
-
-
+    return namespaces_names
 
 def get_failed_pods():
+    namespaces_names = get_namespaces()
+    failed_pod_of_deployments = []
+    failed_pod_of_jobs = []
     logger.info("Looking for failed pods ...")
     for ns in namespaces_names:
         pods = core_v1.list_namespaced_pod(namespace=ns, watch=False)
@@ -62,8 +62,11 @@ def get_failed_pods():
                         for condition in pod.status.container_statuses:
                             if ((not condition.state.running) or (condition.state.terminated and condition.state.terminated.reason != "Completed")):
                                  failed_pod_of_deployments.append(pod)
+    get_failed_deployments(failed_pod_of_deployments)
+    
 
-def get_failed_deployments():
+def get_failed_deployments(failed_pod_of_deployments):
+    failed_deployments = []
     logger.info("Looking for failed deployments ...")
     for pod in failed_pod_of_deployments:
         creation_timestamp = pod.metadata.creation_timestamp
@@ -84,6 +87,7 @@ def get_failed_deployments():
                     collection['ns'] = pod.metadata.namespace
                     collection['pod_creation_timestamp'] = pod.metadata.creation_timestamp
                     failed_deployments.append(collection)
+    delete_deployments(failed_deployments)
 
 
 
@@ -100,7 +104,7 @@ def get_failed_deployments():
 #                                 print(pod.metadata.name, condition.state.terminated.reason)
 
 
-def delete_deployments():
+def delete_deployments(failed_deployments):
     if len(failed_deployments) == 0:
         logger.info("No failed deployments found")
         exit(0)
@@ -138,9 +142,10 @@ def notify():
     logger.info("Webhook sent successfully")
 
 if __name__ == "__main__":
-    get_namespaces()
     get_failed_pods()
-    get_failed_deployments()
+
+    # get_namespaces()
+    
     #get_failed_jobs()
-    delete_deployments()
+    #delete_deployments()
     #notify()
