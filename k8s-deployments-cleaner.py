@@ -104,11 +104,6 @@ def get_failed_jobs(failed_pod_of_jobs):
         for condition in pod.status.container_statuses:
             print(pod.metadata.namespace, pod.metadata.name)
 
-def get_failed_cron_jobs(failed_pod_of_cron_jobs):
-    logger.info("Looking for failed CronJobs ...")
-    for pod in failed_pod_of_cron_jobs:
-        print(pod.metadata.name)
-
 def delete_deployments(failed_deployments):
     if len(failed_deployments) == 0:
         logger.info("No failed deployments found")
