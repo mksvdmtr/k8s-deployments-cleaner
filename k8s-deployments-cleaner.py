@@ -52,7 +52,8 @@ def get_failed_pods():
     namespaces_names = get_namespaces()
     failed_pod_of_deployments = []
     failed_pod_of_jobs = []
-    logger.info("Looking for failed pods ...")
+    failed_pod_of_cron_jobs = []
+    logger.info("Looking for failed Pods ...")
     for ns in namespaces_names:
         pods = core_v1.list_namespaced_pod(namespace=ns, watch=False)
         for pod in pods.items:
@@ -61,13 +62,19 @@ def get_failed_pods():
                     if pod.status.container_statuses:
                         for condition in pod.status.container_statuses:
                             if ((not condition.state.running) or (condition.state.terminated and condition.state.terminated.reason != "Completed")):
-                                 failed_pod_of_deployments.append(pod)
-    get_failed_deployments(failed_pod_of_deployments)
+                                failed_pod_of_deployments.append(pod)
+                if pod.metadata.owner_references[0].kind == 'Job':
+                    if pod.status.container_statuses:
+                        for condition in pod.status.container_statuses:
+                            if ((not condition.state.running) and (condition.state.terminated and condition.state.terminated.reason != "Completed")) or ((not condition.state.running) and (condition.state.waiting and condition.state.waiting.reason == "ImagePullBackOff")):
+                                failed_pod_of_jobs.append(pod)
+    #get_failed_deployments(failed_pod_of_deployments)
+    get_failed_jobs(failed_pod_of_jobs)
     
 
 def get_failed_deployments(failed_pod_of_deployments):
     failed_deployments = []
-    logger.info("Looking for failed deployments ...")
+    logger.info("Looking for failed Deployments ...")
     for pod in failed_pod_of_deployments:
         creation_timestamp = pod.metadata.creation_timestamp
         creation_time = creation_timestamp.replace(tzinfo=timezone.utc)
@@ -91,18 +98,16 @@ def get_failed_deployments(failed_pod_of_deployments):
 
 
 
-# def get_failed_jobs():
-#     logger.info("Looking for failed deployments ...")
-#     for ns in namespaces_names:
-#         pods = core_v1.list_namespaced_pod(namespace=ns, watch=False)
-#         for pod in pods.items:
-#             if pod.metadata.owner_references:
-#                 if pod.metadata.owner_references[0].kind == 'Job':
-#                     if pod.status.container_statuses:
-#                         for condition in pod.status.container_statuses:
-#                             if ((not condition.state.running) and (condition.state.terminated and condition.state.terminated.reason != "Completed")):
-#                                 print(pod.metadata.name, condition.state.terminated.reason)
+def get_failed_jobs(failed_pod_of_jobs):
+    logger.info("Looking for failed Jobs ...")
+    for pod in failed_pod_of_jobs:
+        for condition in pod.status.container_statuses:
+            print(pod.metadata.namespace, pod.metadata.name)
 
+def get_failed_cron_jobs(failed_pod_of_cron_jobs):
+    logger.info("Looking for failed CronJobs ...")
+    for pod in failed_pod_of_cron_jobs:
+        print(pod.metadata.name)
 
 def delete_deployments(failed_deployments):
     if len(failed_deployments) == 0:
@@ -125,8 +130,9 @@ def delete_deployments(failed_deployments):
         except ApiException as e:
             logger.error("Exception when calling AppsV1Api->delete_namespaced_deployment: {}", e)
     logger.info("{} Total deleted deployments: {}", dry_run_msg, len(deleted_deployments))
+    notify(deleted_deployments)
 
-def notify():
+def notify(failed_deployments):
     if len(failed_deployments) == 0:
         exit(0)
     dry_run_msg = ""
