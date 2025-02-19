@@ -40,14 +40,19 @@ failed_deployments = []
 deleted_deployments = []
 retention_days = args.days
 
+failed_pod_of_deployments = []
+failed_pod_of_jobs = []
+
 def get_namespaces():
     logger.info("Getting namespaces ...")
     namespaces = core_v1.list_namespace(label_selector='hnc.x-k8s.io/included-namespace=true', watch=False)
     for ns in namespaces.items:
         namespaces_names.append(ns.metadata.name)
 
-def get_failed_deployments():
-    logger.info("Looking for failed deployments ...")
+
+
+def get_failed_pods():
+    logger.info("Looking for failed pods ...")
     for ns in namespaces_names:
         pods = core_v1.list_namespaced_pod(namespace=ns, watch=False)
         for pod in pods.items:
@@ -56,24 +61,44 @@ def get_failed_deployments():
                     if pod.status.container_statuses:
                         for condition in pod.status.container_statuses:
                             if ((not condition.state.running) or (condition.state.terminated and condition.state.terminated.reason != "Completed")):
-                                creation_timestamp = pod.metadata.creation_timestamp
-                                creation_time = creation_timestamp.replace(tzinfo=timezone.utc)
-                                time_diff = today - creation_time
-                                days_passed = time_diff.days
-                                if days_passed > retention_days:
-                                    replicaset_name = pod.metadata.owner_references[0].name
-                                    replicaset_name_splitted = replicaset_name.rsplit("-", 1)[0]
-                                    try:
-                                        dep_info = apps_v1.read_namespaced_deployment(name=replicaset_name_splitted, namespace=pod.metadata.namespace)
-                                    except ApiException as e:
-                                        logger.warning("Exception when calling AppsV1Api->get_namespaced_deployment: {}", e)
-                                    if (dep_info.status.replicas != 0) and (dep_info.status.replicas == dep_info.status.unavailable_replicas):
-                                        if replicaset_name_splitted not in failed_deployments:
-                                            collection = {}
-                                            collection['name'] = replicaset_name_splitted
-                                            collection['ns'] = pod.metadata.namespace
-                                            collection['pod_creation_timestamp'] = pod.metadata.creation_timestamp
-                                            failed_deployments.append(collection)
+                                 failed_pod_of_deployments.append(pod)
+
+def get_failed_deployments():
+    logger.info("Looking for failed deployments ...")
+    for pod in failed_pod_of_deployments:
+        creation_timestamp = pod.metadata.creation_timestamp
+        creation_time = creation_timestamp.replace(tzinfo=timezone.utc)
+        time_diff = today - creation_time
+        days_passed = time_diff.days
+        if days_passed > retention_days:
+            replicaset_name = pod.metadata.owner_references[0].name
+            replicaset_name_splitted = replicaset_name.rsplit("-", 1)[0]
+            try:
+                dep_info = apps_v1.read_namespaced_deployment(name=replicaset_name_splitted, namespace=pod.metadata.namespace)
+            except ApiException as e:
+                logger.warning("Exception when calling AppsV1Api->get_namespaced_deployment: {}", e)
+            if (dep_info.status.replicas != 0) and (dep_info.status.replicas == dep_info.status.unavailable_replicas):
+                if replicaset_name_splitted not in failed_deployments:
+                    collection = {}
+                    collection['name'] = replicaset_name_splitted
+                    collection['ns'] = pod.metadata.namespace
+                    collection['pod_creation_timestamp'] = pod.metadata.creation_timestamp
+                    failed_deployments.append(collection)
+
+
+
+# def get_failed_jobs():
+#     logger.info("Looking for failed deployments ...")
+#     for ns in namespaces_names:
+#         pods = core_v1.list_namespaced_pod(namespace=ns, watch=False)
+#         for pod in pods.items:
+#             if pod.metadata.owner_references:
+#                 if pod.metadata.owner_references[0].kind == 'Job':
+#                     if pod.status.container_statuses:
+#                         for condition in pod.status.container_statuses:
+#                             if ((not condition.state.running) and (condition.state.terminated and condition.state.terminated.reason != "Completed")):
+#                                 print(pod.metadata.name, condition.state.terminated.reason)
+
 
 def delete_deployments():
     if len(failed_deployments) == 0:
@@ -114,6 +139,8 @@ def notify():
 
 if __name__ == "__main__":
     get_namespaces()
+    get_failed_pods()
     get_failed_deployments()
+    #get_failed_jobs()
     delete_deployments()
-    notify()
+    #notify()
