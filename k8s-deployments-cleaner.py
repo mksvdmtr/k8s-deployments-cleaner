@@ -34,10 +34,13 @@ else:
 
 core_v1 = client.CoreV1Api()
 apps_v1 = client.AppsV1Api()
+batch_v1 = client.BatchV1Api()
 today = datetime.now(timezone.utc)
 
-
 deleted_deployments = []
+deleted_jobs = []
+deleted_cronjobs = []
+
 retention_days = args.days
 
 def get_namespaces():
@@ -52,7 +55,6 @@ def get_failed_pods():
     namespaces_names = get_namespaces()
     failed_pod_of_deployments = []
     failed_pod_of_jobs = []
-    failed_pod_of_cron_jobs = []
     logger.info("Looking for failed Pods ...")
     for ns in namespaces_names:
         pods = core_v1.list_namespaced_pod(namespace=ns, watch=False)
@@ -68,7 +70,7 @@ def get_failed_pods():
                         for condition in pod.status.container_statuses:
                             if ((not condition.state.running) and (condition.state.terminated and condition.state.terminated.reason != "Completed")) or ((not condition.state.running) and (condition.state.waiting and condition.state.waiting.reason == "ImagePullBackOff")):
                                 failed_pod_of_jobs.append(pod)
-    #get_failed_deployments(failed_pod_of_deployments)
+    get_failed_deployments(failed_pod_of_deployments)
     get_failed_jobs(failed_pod_of_jobs)
     
 
@@ -92,61 +94,118 @@ def get_failed_deployments(failed_pod_of_deployments):
                     collection = {}
                     collection['name'] = replicaset_name_splitted
                     collection['ns'] = pod.metadata.namespace
-                    collection['pod_creation_timestamp'] = pod.metadata.creation_timestamp
                     failed_deployments.append(collection)
     delete_deployments(failed_deployments)
 
 
-
 def get_failed_jobs(failed_pod_of_jobs):
     logger.info("Looking for failed Jobs ...")
+    failed_jobs = []
+    failed_cronjobs = []
     for pod in failed_pod_of_jobs:
-        for condition in pod.status.container_statuses:
-            print(pod.metadata.namespace, pod.metadata.name)
+        collection = {}
+        collection['name'] = pod.metadata.owner_references[0].name
+        collection['ns'] = pod.metadata.namespace
+        failed_jobs.append(collection)
+    seen = set()
+    # remove duplicates
+    unique_failed_jobs = [x for x in failed_jobs if tuple(x.items()) not in seen and not seen.add(tuple(x.items()))]
+    
+    for job in unique_failed_jobs:
+        try:
+            job_info = batch_v1.read_namespaced_job(name=job['name'], namespace=job['ns'])
+        except ApiException as e:
+            logger.warning("Exception when calling BatchV1Api->read_namespaced_job: {}", e)
+        if job_info.metadata.owner_references:
+            collection = {}
+            collection['name'] = job_info.metadata.owner_references[0].name
+            collection['ns'] = job_info.metadata.namespace
+            failed_cronjobs.append(collection)
+    delete_cronjobs(failed_cronjobs)
+    delete_jobs(unique_failed_jobs)
+
+def delete_jobs(unique_failed_jobs):
+    if len(unique_failed_jobs) == 0:
+        logger.info("No failed jobs found")
+        return
+    dry_run = None
+    dry_run_msg = ""
+    if args.dry:
+        dry_run = "All"
+        dry_run_msg = "[DRY RUN]"
+    for job in unique_failed_jobs:
+        logger.info("Failed job found: {}, in ns: {}", job['name'], job['ns'])
+        logger.warning("{} Deleting job {} from ns {}", dry_run_msg, job['name'], job['ns'])
+        try:
+            batch_v1.delete_namespaced_job(name=job['name'], namespace=job['ns'], dry_run=dry_run)
+            deleted_jobs.append(job)
+        except ApiException as e:
+            logger.error("Exception when calling BatchV1Api->delete_namespaced_job: {}", e)
+
+def delete_cronjobs(failed_cronjobs):
+    if len(failed_cronjobs) == 0:
+        logger.info("No failed cron jobs found")
+        return
+
+    dry_run = None
+    dry_run_msg = ""
+    if args.dry:
+        dry_run = "All"
+        dry_run_msg = "[DRY RUN]"
+    for cronjob in failed_cronjobs:
+        logger.info("Failed cronjob found: {}, in ns: {}", cronjob['name'], cronjob['ns'])
+        logger.warning("{} Deleting cronjob {} from ns {}", dry_run_msg, cronjob['name'], cronjob['ns'])
+        try:
+            batch_v1.delete_namespaced_cron_job(name=cronjob['name'], namespace=cronjob['ns'], dry_run=dry_run)
+            deleted_cronjobs.append(cronjob)
+        except ApiException as e:
+            logger.error("Exception when calling BatchV1Api->delete_namespaced_cron_job: {}", e)
 
 def delete_deployments(failed_deployments):
     if len(failed_deployments) == 0:
         logger.info("No failed deployments found")
-        exit(0)
+        return
     dry_run = None
     dry_run_msg = ""
     if args.dry:
         dry_run = "All"
         dry_run_msg = "[DRY RUN]"
     for deployment in failed_deployments:
-        logger.info("Failed deployment found: {}, one of its pods was created: {} in ns: {}", deployment['name'], deployment['pod_creation_timestamp'], deployment['ns'])
+        logger.info("Failed deployment found: {}, in ns: {}", deployment['name'], deployment['ns'])
         logger.warning("{} Deleting deployment {} from ns {}", dry_run_msg, deployment['name'], deployment['ns'])
         try:
             apps_v1.delete_namespaced_deployment(name=deployment['name'], namespace=deployment['ns'], dry_run=dry_run)
             collection = {}
             collection['ns'] = deployment['ns']
             collection['name'] = deployment['name']
-            deleted_deployments.append(collection)
+            deleted_deployments.append(deployment)
         except ApiException as e:
             logger.error("Exception when calling AppsV1Api->delete_namespaced_deployment: {}", e)
     logger.info("{} Total deleted deployments: {}", dry_run_msg, len(deleted_deployments))
-    notify(deleted_deployments)
 
-def notify(failed_deployments):
-    if len(failed_deployments) == 0:
-        exit(0)
+def notify(deleted_deployments, deleted_cronjobs, deleted_jobs):
+    if all(not lst for lst in [deleted_deployments, deleted_cronjobs, deleted_jobs]):
+      logger.info("Nothing to notify")
+      return
     dry_run_msg = ""
     if args.dry:
         dry_run_msg = "[DRY RUN]"
-    payload = { 
-        "deployments": deleted_deployments,
+    payload = {
         "days": retention_days,
         "dry": dry_run_msg
-    }
+        }
+    print(deleted_deployments)
+    if deleted_deployments:
+        payload['deployments'] = deleted_deployments
+    if deleted_jobs:
+        payload['jobs'] = deleted_jobs
+    if deleted_cronjobs:
+        payload['cronjobs'] = deleted_cronjobs
+
     webhook_response = requests.post(WEBHOOK_URL, json=payload, headers={'Content-Type': 'application/json'})
     webhook_response.raise_for_status()
     logger.info("Webhook sent successfully")
 
 if __name__ == "__main__":
     get_failed_pods()
-
-    # get_namespaces()
-    
-    #get_failed_jobs()
-    #delete_deployments()
-    #notify()
+    notify(deleted_deployments=deleted_deployments, deleted_cronjobs=deleted_cronjobs, deleted_jobs=deleted_jobs)
