@@ -123,13 +123,11 @@ def get_failed_jobs(failed_pod_of_jobs):
             job_info = batch_v1.read_namespaced_job(name=job['name'], namespace=job['ns'])
         except ApiException as e:
             logger.warning("Exception when calling BatchV1Api->read_namespaced_job: {}", e)
-        print(job_info.metadata.owner_references)
         if job_info.metadata.owner_references[0].kind == "CronJob":
             collection = {}
             collection['name'] = job_info.metadata.owner_references[0].name
             collection['ns'] = job_info.metadata.namespace
             failed_cronjobs.append(collection)
-            print(collection)
     delete_jobs(unique_failed_jobs)        
     delete_cronjobs(failed_cronjobs)
     delete_all_failed_pods(failed_pod_all)
