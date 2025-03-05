@@ -40,6 +40,7 @@ today = datetime.now(timezone.utc)
 deleted_deployments = []
 deleted_jobs = []
 deleted_cronjobs = []
+failed_pod_all = []
 
 retention_days = args.days
 
@@ -68,10 +69,16 @@ def get_failed_pods():
                 if pod.metadata.owner_references[0].kind == 'Job':
                     if pod.status.container_statuses:
                         for condition in pod.status.container_statuses:
-                            if ((not condition.state.running) and (condition.state.terminated and condition.state.terminated.reason != "Completed")) or ((not condition.state.running) and (condition.state.waiting and condition.state.waiting.reason == "ImagePullBackOff")):
+                            if ((not condition.state.running) and (condition.state.terminated and condition.state.terminated.reason != "Completed")) or ((not condition.state.running) and (condition.state.waiting and (condition.state.waiting.reason == "ImagePullBackOff" or condition.state.waiting.reason == "ErrImagePull"))):
                                 failed_pod_of_jobs.append(pod)
+                if pod.status.container_statuses:
+                    if not pod.metadata.owner_references[0].kind == 'ReplicaSet' and not pod.metadata.owner_references[0].kind == 'StatefulSet':
+                        for condition in pod.status.container_statuses:
+                            if ((not condition.state.running) and (condition.state.terminated and condition.state.terminated.reason != "Completed")) or ((not condition.state.running) and (condition.state.waiting and (condition.state.waiting.reason == "ImagePullBackOff" or condition.state.waiting.reason == "ErrImagePull"))):
+                                failed_pod_all.append(pod)
     get_failed_deployments(failed_pod_of_deployments)
     get_failed_jobs(failed_pod_of_jobs)
+    
     
 
 def get_failed_deployments(failed_pod_of_deployments):
@@ -116,13 +123,33 @@ def get_failed_jobs(failed_pod_of_jobs):
             job_info = batch_v1.read_namespaced_job(name=job['name'], namespace=job['ns'])
         except ApiException as e:
             logger.warning("Exception when calling BatchV1Api->read_namespaced_job: {}", e)
-        if job_info.metadata.owner_references:
+        print(job_info.metadata.owner_references)
+        if job_info.metadata.owner_references[0].kind == "CronJob":
             collection = {}
             collection['name'] = job_info.metadata.owner_references[0].name
             collection['ns'] = job_info.metadata.namespace
             failed_cronjobs.append(collection)
+            print(collection)
+    delete_jobs(unique_failed_jobs)        
     delete_cronjobs(failed_cronjobs)
-    delete_jobs(unique_failed_jobs)
+    delete_all_failed_pods(failed_pod_all)
+
+def delete_all_failed_pods(failed_pod_all):
+    if len(failed_pod_all) == 0:
+        logger.info("No failed jobs found")
+        return
+    dry_run = None
+    dry_run_msg = ""
+    if args.dry:
+        dry_run = "All"
+        dry_run_msg = "[DRY RUN]"
+    for pod in failed_pod_all:
+        logger.info("Failed pod found: {}, in ns: {}", pod.metadata.name, pod.metadata.namespace)
+        logger.warning("{} Deleting pod {} from ns {}", dry_run_msg, pod.metadata.name, pod.metadata.namespace)
+        try:
+            core_v1.delete_namespaced_pod(name=pod.metadata.name, namespace=pod.metadata.namespace, dry_run=dry_run)
+        except ApiException as e:
+            logger.error("Exception when calling CoreV1Api->delete_namespaced_pod: {}", e)
 
 def delete_jobs(unique_failed_jobs):
     if len(unique_failed_jobs) == 0:
@@ -175,9 +202,6 @@ def delete_deployments(failed_deployments):
         logger.warning("{} Deleting deployment {} from ns {}", dry_run_msg, deployment['name'], deployment['ns'])
         try:
             apps_v1.delete_namespaced_deployment(name=deployment['name'], namespace=deployment['ns'], dry_run=dry_run)
-            collection = {}
-            collection['ns'] = deployment['ns']
-            collection['name'] = deployment['name']
             deleted_deployments.append(deployment)
         except ApiException as e:
             logger.error("Exception when calling AppsV1Api->delete_namespaced_deployment: {}", e)
@@ -194,7 +218,6 @@ def notify(deleted_deployments, deleted_cronjobs, deleted_jobs):
         "days": retention_days,
         "dry": dry_run_msg
         }
-    print(deleted_deployments)
     if deleted_deployments:
         payload['deployments'] = deleted_deployments
     if deleted_jobs:
