@@ -134,7 +134,7 @@ def get_failed_jobs(failed_pod_of_jobs):
 
 def delete_all_failed_pods(failed_pod_all):
     if len(failed_pod_all) == 0:
-        logger.info("No failed jobs found")
+        logger.info("No failed pods found")
         return
     dry_run = None
     dry_run_msg = ""
